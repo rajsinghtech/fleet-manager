@@ -7,7 +7,7 @@ data:
     kafka:
       bootstrap.servers: "tesla-kafka-bootstrap.kafka:9092"
       group.id: "fleet-manager"
-      auto.offset.reset: "earliest"
+      auto.offset.reset: "latest"
       topic: "tesla_V"
 
     aws:
@@ -18,6 +18,6 @@ data:
       secretKey: "31zQ864x0rvWHwyWlTcYhUXJjo7nEJ4uwUCarOB8"
       region: "us-west-1"
 
-    local:
-      enabled: true
-      basePath: "./data"
+    # local:
+    #   enabled: true
+    #   basePath: "./data"
