@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fleet-manager
+  namespace: tesla
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fleet-manager
+  template:
+    metadata:
+      labels:
+        app: fleet-manager
+    spec:
+      containers:
+        - name: fleet-manager
+          image: quay.io/rajsinghcpre/fleet-manager-backend:v0.0.1
+          command: ["/fleet-manager", "-config", "/etc/fleet-manager/backend.yaml"]
+          volumeMounts:
+            - name: config-volume
+              mountPath: /etc/fleet-manager
+          ports:
+            - containerPort: 2112
+              name: metrics
+      volumes:
+        - name: config-volume
+          configMap:
+            name: fleet-manager-config

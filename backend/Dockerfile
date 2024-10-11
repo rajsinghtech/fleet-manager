@@ -22,7 +22,7 @@ RUN wget https://github.com/edenhill/librdkafka/archive/refs/tags/v${LIBRDKAFKA_
     make && make install && \
     ldconfig
 
-WORKDIR /go/src/fleet-telemetry-consumer
+WORKDIR /go/src/fleet-manager
 
 COPY go.mod go.sum ./
 RUN go mod download
@@ -30,7 +30,7 @@ RUN go mod download
 COPY . .
 
 # Build with dynamic linking
-RUN go build -tags dynamic -o /go/bin/fleet-telemetry-consumer
+RUN go build -tags dynamic -o /go/bin/fleet-manager
 
 # Use a minimal base image
 FROM debian:bullseye-slim
@@ -46,10 +46,10 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the built binary and shared libraries
-COPY --from=build /go/bin/fleet-telemetry-consumer /
+COPY --from=build /go/bin/fleet-manager /
 COPY --from=build /usr/lib/librdkafka*.so* /usr/lib/
 
 # Expose Prometheus metrics port
 EXPOSE 2112
 
-CMD ["/fleet-telemetry-consumer", "-config", "/etc/fleet-telemetry-consumer/config.json"]
+CMD ["/fleet-manager", "-config", "/etc/fleet-manager/config.json"]

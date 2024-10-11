@@ -4,3 +4,4 @@ kind: Kustomization
 resources:
   - ./fleet-telemetry-consumer
   - ./dashboards
+  - ./fleet-manager
