@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fleet-telemetry-consumer
+  namespace: tesla
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fleet-telemetry-consumer
+  template:
+    metadata:
+      labels:
+        app: fleet-telemetry-consumer
+    spec:
+      containers:
+        - name: fleet-telemetry-consumer
+          image: quay.io/rajsinghcpre/fleet-telemetry-consumer:v0.0.14
+          command: ["/fleet-telemetry-consumer", "-config", "/etc/fleet-telemetry-consumer/config.json"]
+          volumeMounts:
+            - name: config-volume
+              mountPath: /etc/fleet-telemetry-consumer
+          ports:
+            - containerPort: 2112
+              name: metrics
+      volumes:
+        - name: config-volume
+          configMap:
+            name: fleet-telemetry-consumer-config

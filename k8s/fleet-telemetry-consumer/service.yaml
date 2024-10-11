@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: fleet-telemetry-consumer
+  namespace: tesla
+  labels:
+    app: fleet-telemetry-consumer
+spec:
+  selector:
+    app: fleet-telemetry-consumer
+  ports:
+    - name: metrics
+      port: 2112
+      targetPort: 2112
+      protocol: TCP

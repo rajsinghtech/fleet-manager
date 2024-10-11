@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: monitoring
+commonAnnotations:
+  grafana_folder: Tesla
+commonLabels:
+  grafana_dashboard: "1"
+configMapGenerator:
+  - name: tesla-consumer-dashboard
+    files:
+      - vehicle-data.json
+    options:
+      disableNameSuffixHash: true 
