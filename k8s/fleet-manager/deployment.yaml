@@ -25,6 +25,7 @@ spec:
           ports:
             - containerPort: 8501
               name: http
+
         - name: backend
           image: quay.io/rajsinghcpre/fleet-manager-backend:v0.0.1
           command: ["/fleet-manager", "-config", "/etc/fleet-manager/config.yaml"]
@@ -36,17 +37,6 @@ spec:
           ports:
             - containerPort: 2112
               name: metrics
-        - name: clickhouse
-          image: bitnami/clickhouse:latest
-          ports:
-            - containerPort: 8123    # HTTP Interface
-            - containerPort: 9000    # Native TCP Interface
-            - containerPort: 9009    # Inter-server Communication
-          env:
-            - name: CLICKHOUSE_ADMIN_USER
-              value: "USERNAME"
-            - name: CLICKHOUSE_ADMIN_PASSWORD
-              value: "PASSWORD"
       volumes:
         - name: config-volume
           configMap:
