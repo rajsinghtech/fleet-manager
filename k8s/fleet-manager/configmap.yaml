@@ -3,7 +3,7 @@ kind: ConfigMap
 metadata:
   name: fleet-manager-config
 data: 
-  backend.yaml: |
+  config.yaml: |
     kafka:
       bootstrap.servers: "tesla-kafka-bootstrap.kafka:9092"
       group.id: "fleet-manager"
