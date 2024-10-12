@@ -12,3 +12,7 @@ spec:
       port: 2112
       targetPort: 2112
       protocol: TCP
+    - name: http
+      port: 8501
+      targetPort: 8501
+      protocol: TCP
