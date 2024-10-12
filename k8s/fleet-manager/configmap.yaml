@@ -9,7 +9,6 @@ data:
       group.id: "fleet-manager"
       auto.offset.reset: "latest"
       topic: "tesla_V"
-
     aws:
       enabled: true
       bucket: "ceph-bkt-tesla"
@@ -17,7 +16,6 @@ data:
       accessKey: "9SVU0V9W84O4I80U0RR6"
       secretKey: "31zQ864x0rvWHwyWlTcYhUXJjo7nEJ4uwUCarOB8"
       region: "us-west-1"
-
-    # local:
-    #   enabled: true
-    #   basePath: "./data"
+    local:
+      enabled: true
+      basePath: "./data"
