@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  frontend:
+    build:
+      context: ./frontend
+    container_name: fleet-manager-frontend
+    ports:
+      - "8501:8501"  # Exposes port 8501
+    volumes:
+      - ./examples/config.yaml:/etc/fleet-manager/config.yaml  # Mounts config
+    environment:
+      CONFIG_PATH: /etc/fleet-manager/config.yaml  # Example environment variable
+    depends_on:
+      - backend  # Ensures backend starts before frontend
+
+  backend:
+    build:
+      context: ./backend
+    container_name: fleet-manager-backend
+    command: ["/fleet-manager", "-config", "/etc/fleet-manager/config.yaml"]  # Overrides the default command
+    ports:
+      - "2112:2112"  # Exposes port 2112 for metrics
+    volumes:
+      - ./examples/config.yaml:/etc/fleet-manager/config.yaml  # Mounts config
+    depends_on:
+      - clickhouse  # Ensures ClickHouse starts before backend
+
+  clickhouse:
+    image: bitnami/clickhouse:latest
+    container_name: clickhouse
+    ports:
+      - "8123:8123"   # HTTP Interface
+      - "9000:9000"   # Native TCP Interface
+      - "9009:9009"   # Inter-server Communication
+    environment:
+      CLICKHOUSE_ADMIN_USER: "USERNAME"       # Replace with your admin username
+      CLICKHOUSE_ADMIN_PASSWORD: "PASSWORD"   # Replace with your admin password

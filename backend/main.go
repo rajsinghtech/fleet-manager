@@ -3,14 +3,17 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -22,8 +25,10 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/confluentinc/confluent-kafka-go/kafka"
+	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"github.com/teslamotors/fleet-telemetry/protos"
 	"net/http"
@@ -31,9 +36,10 @@ import (
 
 // Config holds the entire configuration structure
 type Config struct {
-	Kafka KafkaConfig `yaml:"kafka"`
-	AWS   *S3Config   `yaml:"aws,omitempty"`
-	Local *LocalConfig `yaml:"local,omitempty"`
+	Kafka      KafkaConfig       `yaml:"kafka"`
+	AWS        *S3Config         `yaml:"aws,omitempty"`
+	Local      *LocalConfig      `yaml:"local,omitempty"`
+	ClickHouse *ClickHouseConfig `yaml:"clickhouse,omitempty"`
 }
 
 // S3Config holds AWS S3 configuration
@@ -59,16 +65,31 @@ type KafkaConfig struct {
 	Topic            string `yaml:"topic"`
 }
 
+// ClickHouseConfig holds ClickHouse database configuration
+type ClickHouseConfig struct {
+	Enabled   bool   `yaml:"enabled"`
+	Host      string `yaml:"host"`
+	Port      int    `yaml:"port"`
+	Database  string `yaml:"database"`
+	Username  string `yaml:"username"`
+	Password  string `yaml:"password"`
+	Secure    bool   `yaml:"secure"`
+	TableName string `yaml:"table_name,omitempty"` // Optional: specify a custom table name
+}
+
 // Service encapsulates the application's dependencies
 type Service struct {
-	Config                Config
-	S3Client              *s3.S3
-	LocalBackupEnabled    bool
-	LocalBasePath         string
-	KafkaConsumer         *kafka.Consumer
-	PrometheusGauge       *prometheus.GaugeVec
-	PrometheusLatitude    *prometheus.GaugeVec
-	PrometheusLongitude   *prometheus.GaugeVec
+	Config              Config
+	S3Client            *s3.S3
+	LocalBackupEnabled  bool
+	LocalBasePath       string
+	KafkaConsumer       *kafka.Consumer
+	PrometheusGauge     *prometheus.GaugeVec
+	PrometheusLatitude  *prometheus.GaugeVec
+	PrometheusLongitude *prometheus.GaugeVec
+	ClickHouseClient    clickhouse.Conn
+	ClickHouseEnabled   bool
+	ClickHouseTableName string
 }
 
 // NewService initializes the service with configurations
@@ -93,6 +114,35 @@ func NewService(cfg Config) (*Service, error) {
 		log.Println("S3 connection established successfully.")
 	} else {
 		log.Println("AWS S3 configuration not provided. S3 uploads are disabled.")
+	}
+
+	// Initialize ClickHouse if configuration is provided and enabled
+	if service.Config.ClickHouse != nil && service.Config.ClickHouse.Enabled {
+		chClient, err := configureClickHouse(service.Config.ClickHouse)
+		if err != nil {
+			return nil, fmt.Errorf("failed to configure ClickHouse: %w", err)
+		}
+		service.ClickHouseClient = chClient
+		service.ClickHouseEnabled = true
+
+		if err := testClickHouseConnection(chClient); err != nil {
+			return nil, fmt.Errorf("ClickHouse connection test failed: %w", err)
+		}
+		log.Println("ClickHouse connection established successfully.")
+
+		// Set ClickHouse table name, defaulting if not provided
+		if service.Config.ClickHouse.TableName != "" {
+			service.ClickHouseTableName = service.Config.ClickHouse.TableName
+		} else {
+			service.ClickHouseTableName = "vehicle_data"
+		}
+
+		// Load existing data into ClickHouse
+		if err := loadExistingDataIntoClickHouse(service); err != nil {
+			return nil, fmt.Errorf("failed to load existing data into ClickHouse: %w", err)
+		}
+	} else {
+		log.Println("ClickHouse integration is disabled or not configured.")
 	}
 
 	// Initialize Kafka consumer
@@ -177,6 +227,192 @@ func testS3Connection(s3Svc *s3.S3, bucket string) error {
 	return nil
 }
 
+// configureClickHouse sets up the ClickHouse client
+func configureClickHouse(cfg *ClickHouseConfig) (clickhouse.Conn, error) {
+	conn, err := clickhouse.Open(&clickhouse.Options{
+		Addr: []string{
+			fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
+		},
+		Auth: clickhouse.Auth{
+			Database: cfg.Database,
+			Username: cfg.Username,
+			Password: cfg.Password,
+		},
+		TLS: &tls.Config{
+			InsecureSkipVerify: !cfg.Secure,
+		},
+		// Additional options as needed
+	})
+	if err != nil {
+		return nil, fmt.Errorf("unable to connect to ClickHouse: %w", err)
+	}
+	return conn, nil
+}
+
+// testClickHouseConnection verifies the connection to ClickHouse
+func testClickHouseConnection(conn clickhouse.Conn) error {
+	return conn.Ping(context.Background())
+}
+
+// loadExistingDataIntoClickHouse loads existing JSON data from S3 or local storage into ClickHouse
+func loadExistingDataIntoClickHouse(service *Service) error {
+	log.Println("Loading existing data from storage into ClickHouse...")
+	var files []string
+	var err error
+
+	if service.S3Client != nil {
+		files, err = listS3JSONFiles(service.S3Client, service.Config.AWS.Bucket)
+		if err != nil {
+			return fmt.Errorf("failed to list JSON files in S3: %w", err)
+		}
+	} else if service.LocalBackupEnabled {
+		files, err = listLocalJSONFiles(service.LocalBasePath)
+		if err != nil {
+			return fmt.Errorf("failed to list JSON files locally: %w", err)
+		}
+	} else {
+		return fmt.Errorf("no storage (S3 or local) configured to load data from")
+	}
+
+	for _, file := range files {
+		var data []byte
+		if service.S3Client != nil {
+			data, err = downloadS3JSONFile(service.S3Client, service.Config.AWS.Bucket, file)
+			if err != nil {
+				log.Printf("Failed to download S3 file '%s': %v", file, err)
+				continue
+			}
+		} else if service.LocalBackupEnabled {
+			data, err = os.ReadFile(file)
+			if err != nil {
+				log.Printf("Failed to read local file '%s': %v", file, err)
+				continue
+			}
+		}
+
+		vehicleData := &protos.Payload{}
+		if err := protojson.Unmarshal(data, vehicleData); err != nil {
+			log.Printf("Failed to unmarshal JSON data from file '%s': %v", file, err)
+			continue
+		}
+
+		if err := insertIntoClickHouse(service.ClickHouseClient, service.ClickHouseTableName, vehicleData); err != nil {
+			log.Printf("Failed to insert data from file '%s' into ClickHouse: %v", file, err)
+			continue
+		}
+
+		log.Printf("Successfully loaded data from '%s' into ClickHouse.", file)
+	}
+
+	log.Println("Completed loading existing data into ClickHouse.")
+	return nil
+}
+
+// listS3JSONFiles lists all JSON files in the specified S3 bucket
+func listS3JSONFiles(s3Svc *s3.S3, bucket string) ([]string, error) {
+	var files []string
+	input := &s3.ListObjectsV2Input{
+		Bucket: aws.String(bucket),
+		Prefix: aws.String(""),
+	}
+
+	err := s3Svc.ListObjectsV2Pages(input, func(page *s3.ListObjectsV2Output, lastPage bool) bool {
+		for _, obj := range page.Contents {
+			if strings.HasSuffix(*obj.Key, ".json") {
+				files = append(files, *obj.Key)
+			}
+		}
+		return !lastPage
+	})
+
+	if err != nil {
+		return nil, err
+	}
+	return files, nil
+}
+
+// listLocalJSONFiles lists all JSON files in the specified local directory
+func listLocalJSONFiles(basePath string) ([]string, error) {
+	var files []string
+	err := filepath.Walk(basePath, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() && strings.HasSuffix(info.Name(), ".json") {
+			files = append(files, path)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return files, nil
+}
+
+// downloadS3JSONFile downloads a JSON file from S3
+func downloadS3JSONFile(s3Svc *s3.S3, bucket, key string) ([]byte, error) {
+	output, err := s3Svc.GetObject(&s3.GetObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer output.Body.Close()
+
+	data, err := io.ReadAll(output.Body)
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+// insertIntoClickHouse inserts vehicle data into ClickHouse
+func insertIntoClickHouse(conn clickhouse.Conn, tableName string, data *protos.Payload) error {
+	ctx := context.Background()
+
+	// Ensure the target table exists. This is optional and can be handled separately.
+	// Uncomment the following lines if you want the application to create the table automatically.
+	createTableQuery := fmt.Sprintf(`
+	CREATE TABLE IF NOT EXISTS %s (
+		vin String,
+		timestamp DateTime,
+		data String
+	) ENGINE = MergeTree()
+	ORDER BY (vin, timestamp)
+	`, tableName)
+	if err := conn.Exec(ctx, createTableQuery); err != nil {
+		return fmt.Errorf("failed to create ClickHouse table: %w", err)
+	}
+
+	// Prepare the batch insert
+	batch, err := conn.PrepareBatch(ctx, fmt.Sprintf("INSERT INTO %s (vin, timestamp, data)", tableName))
+	if err != nil {
+		return fmt.Errorf("failed to prepare ClickHouse batch: %w", err)
+	}
+
+	// Serialize the data to JSON string
+	jsonData, err := protojson.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("failed to marshal data to JSON: %w", err)
+	}
+
+	// Use the current UTC time as the timestamp
+	timestamp := time.Now().UTC()
+
+	// Append data to the batch
+	if err := batch.Append(data.Vin, timestamp, string(jsonData)); err != nil {
+		return fmt.Errorf("failed to append data to ClickHouse batch: %w", err)
+	}
+
+	// Send the batch to ClickHouse
+	if err := batch.Send(); err != nil {
+		return fmt.Errorf("failed to send ClickHouse batch: %w", err)
+	}
+
+	return nil
+}
+
 // configureKafka sets up the Kafka consumer
 func configureKafka(kafkaCfg KafkaConfig) (*kafka.Consumer, error) {
 	consumerConfig := &kafka.ConfigMap{
@@ -217,29 +453,49 @@ func loadConfig(path string) (Config, error) {
 		return cfg, fmt.Errorf("incomplete Kafka configuration")
 	}
 
+	// Optionally, validate ClickHouse configuration if provided and enabled
+	if cfg.ClickHouse != nil && cfg.ClickHouse.Enabled {
+		if cfg.ClickHouse.Host == "" || cfg.ClickHouse.Port == 0 || cfg.ClickHouse.Database == "" ||
+			cfg.ClickHouse.Username == "" || cfg.ClickHouse.Password == "" {
+			return cfg, fmt.Errorf("incomplete ClickHouse configuration")
+		}
+	}
+
+	// Optionally, validate AWS configuration if provided
+	if cfg.AWS != nil {
+		if err := validateS3Config(cfg.AWS); err != nil {
+			return cfg, fmt.Errorf("invalid AWS configuration: %w", err)
+		}
+	}
+
 	return cfg, nil
 }
 
-// uploadToS3 uploads Protobuf data to the specified S3 bucket with a vin/year/month/day key structure
-func uploadToS3(s3Svc *s3.S3, bucket, vin string, data []byte) error {
+// uploadToS3 uploads Protobuf data as JSON to the specified S3 bucket with a vin/year/month/day key structure
+func uploadToS3(s3Svc *s3.S3, bucket, vin string, data *protos.Payload) error {
 	now := time.Now().UTC()
-	key := fmt.Sprintf("%s/%04d/%02d/%02d/%04d%02d%02dT%02d%02d%02d.%06dZ.protobuf",
+	key := fmt.Sprintf("%s/%04d/%02d/%02d/%04d%02d%02dT%02d%02d%02d.%06dZ.json",
 		vin,
 		now.Year(),
-		now.Month(),
+		int(now.Month()),
 		now.Day(),
-		now.Year(), now.Month(), now.Day(),
+		now.Year(), int(now.Month()), now.Day(),
 		now.Hour(), now.Minute(), now.Second(), now.Nanosecond()/1000,
 	)
+
+	jsonData, err := protojson.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("failed to marshal data to JSON: %w", err)
+	}
 
 	input := &s3.PutObjectInput{
 		Bucket:      aws.String(bucket),
 		Key:         aws.String(key),
-		Body:        bytes.NewReader(data),
-		ContentType: aws.String("application/x-protobuf"),
+		Body:        bytes.NewReader(jsonData),
+		ContentType: aws.String("application/json"),
 	}
 
-	_, err := s3Svc.PutObject(input)
+	_, err = s3Svc.PutObject(input)
 	if err != nil {
 		return fmt.Errorf("failed to upload to S3 at key '%s': %w", key, err)
 	}
@@ -248,25 +504,32 @@ func uploadToS3(s3Svc *s3.S3, bucket, vin string, data []byte) error {
 	return nil
 }
 
-// backupLocally saves Protobuf data to the local filesystem with a vin/year/month/day folder structure
-func backupLocally(basePath, vin string, data []byte) error {
+// backupLocally saves Protobuf data as JSON to the local filesystem with a vin/year/month/day folder structure
+func backupLocally(basePath, vin string, data *protos.Payload) error {
 	now := time.Now().UTC()
 	dirPath := filepath.Join(basePath,
 		vin,
 		fmt.Sprintf("%04d", now.Year()),
-		fmt.Sprintf("%02d", now.Month()),
+		fmt.Sprintf("%02d", int(now.Month())),
 		fmt.Sprintf("%02d", now.Day()),
 	)
 	if err := os.MkdirAll(dirPath, os.ModePerm); err != nil {
 		return fmt.Errorf("failed to create directories '%s': %w", dirPath, err)
 	}
 
-	fileName := fmt.Sprintf("%04d%02d%02dT%02d%02d%02d.%06dZ.protobuf",
-		now.Year(), now.Month(), now.Day(),
+	fileName := fmt.Sprintf("%04d%02d%02dT%02d%02d%02d.%06dZ.json",
+		now.Year(), int(now.Month()), now.Day(),
 		now.Hour(), now.Minute(), now.Second(), now.Nanosecond()/1000)
 
 	filePath := filepath.Join(dirPath, fileName)
-	if err := os.WriteFile(filePath, data, 0644); err != nil {
+
+	// Serialize to JSON
+	jsonData, err := protojson.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("failed to marshal data to JSON: %w", err)
+	}
+
+	if err := os.WriteFile(filePath, jsonData, 0644); err != nil {
 		return fmt.Errorf("failed to write file '%s': %w", filePath, err)
 	}
 
@@ -466,24 +729,31 @@ func startConsumerLoop(service *Service, ctx context.Context, wg *sync.WaitGroup
 				processValue(datum, service, vehicleData.Vin)
 			}
 
-			// Serialize data as Protobuf for storage
-			serializedData, err := proto.Marshal(vehicleData)
-			if err != nil {
-				log.Printf("Failed to marshal vehicleData to Protobuf: %v", err)
-				continue
-			}
+			// // Serialize data as JSON for storage
+			// jsonData, err := protojson.Marshal(vehicleData)
+			// if err != nil {
+			// 	log.Printf("Failed to marshal vehicleData to JSON: %v", err)
+			// 	continue
+			// }
 
 			// Upload to S3 if enabled
 			if service.S3Client != nil {
-				if err := uploadToS3(service.S3Client, service.Config.AWS.Bucket, vehicleData.Vin, serializedData); err != nil {
+				if err := uploadToS3(service.S3Client, service.Config.AWS.Bucket, vehicleData.Vin, vehicleData); err != nil {
 					log.Printf("Failed to upload vehicle data to S3: %v", err)
 				}
 			}
 
 			// Backup locally if enabled
 			if service.LocalBackupEnabled {
-				if err := backupLocally(service.LocalBasePath, vehicleData.Vin, serializedData); err != nil {
+				if err := backupLocally(service.LocalBasePath, vehicleData.Vin, vehicleData); err != nil {
 					log.Printf("Failed to backup vehicle data locally: %v", err)
+				}
+			}
+
+			// Insert into ClickHouse if enabled
+			if service.ClickHouseEnabled {
+				if err := insertIntoClickHouse(service.ClickHouseClient, service.ClickHouseTableName, vehicleData); err != nil {
+					log.Printf("Failed to insert vehicle data into ClickHouse: %v", err)
 				}
 			}
 
@@ -542,6 +812,15 @@ func main() {
 		log.Printf("Error closing Kafka consumer: %v", err)
 	} else {
 		log.Println("Kafka consumer closed successfully.")
+	}
+
+	// Close ClickHouse connection if initialized
+	if service.ClickHouseEnabled {
+		if err := service.ClickHouseClient.Close(); err != nil {
+			log.Printf("Error closing ClickHouse connection: %v", err)
+		} else {
+			log.Println("ClickHouse connection closed successfully.")
+		}
 	}
 
 	// Wait for all goroutines to finish
