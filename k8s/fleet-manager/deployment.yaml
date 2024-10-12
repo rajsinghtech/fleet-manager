@@ -16,30 +16,30 @@ spec:
       containers:
         - name: frontend
           image: quay.io/rajsinghcpre/fleet-manager:v0.0.2
-          # command: ["/fleet-manager", "-config", "/etc/fleet-manager/backend.yaml"]
+          # command: ["/fleet-manager", "-config", "/etc/fleet-manager/frontend.yaml"]
           volumeMounts:
             - name: config-volume
-              mountPath: /etc/fleet-
+              mountPath: /etc/fleet-manager
             - name: data
               mountPath: /data
           ports:
             - containerPort: 8501
               name: http
-            
+
         - name: backend
           image: quay.io/rajsinghcpre/fleet-manager-backend:v0.0.2
           command: ["/fleet-manager", "-config", "/etc/fleet-manager/backend.yaml"]
           volumeMounts:
             - name: config-volume
               mountPath: /etc/fleet-manager
-          ports:
             - name: data
               mountPath: /data
+          ports:
             - containerPort: 2112
               name: metrics
       volumes:
         - name: config-volume
           configMap:
             name: fleet-manager-config
-        - emptyDir: {}
-          name: data
+        - name: data
+          emptyDir: {}
