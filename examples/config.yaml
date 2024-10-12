@@ -5,7 +5,7 @@ kafka:
   topic: "tesla_V"
 
 aws:
-  enabled: false
+  enabled: true
   bucket: "ceph-bkt-tesla"
   endpoint: "http://rook-ceph-rgw-my-store.rook-ceph:80"
   accessKey: "9SVU0V9W84O4I80U0RR6"

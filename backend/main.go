@@ -9,29 +9,29 @@ import (
 	"io"
 	"log"
 	"math"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"reflect"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
-	"github.com/ClickHouse/clickhouse-go/v2"
+	"gopkg.in/yaml.v3"
+
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/confluentinc/confluent-kafka-go/kafka"
+	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/teslamotors/fleet-telemetry/protos"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
-	"gopkg.in/yaml.v3"
+	"github.com/teslamotors/fleet-telemetry/protos"
+	"net/http"
 )
 
 // Config holds the entire configuration structure
@@ -44,7 +44,6 @@ type Config struct {
 
 // S3Config holds AWS S3 configuration
 type S3Config struct {
-	Enabled   bool   `yaml:"enabled"`
 	Endpoint  string `yaml:"endpoint"`
 	Bucket    string `yaml:"bucket"`
 	AccessKey string `yaml:"accessKey"`
@@ -75,7 +74,7 @@ type ClickHouseConfig struct {
 	Username  string `yaml:"username"`
 	Password  string `yaml:"password"`
 	Secure    bool   `yaml:"secure"`
-	TableName string `yaml:"table_name,omitempty"`
+	TableName string `yaml:"table_name,omitempty"` // Optional: specify a custom table name
 }
 
 // Service encapsulates the application's dependencies
@@ -98,31 +97,28 @@ func NewService(cfg Config) (*Service, error) {
 	service := &Service{
 		Config:             cfg,
 		LocalBackupEnabled: cfg.Local != nil && cfg.Local.Enabled,
+		LocalBasePath:      cfg.Local.BasePath,
 	}
 
-	if service.LocalBackupEnabled {
-		service.LocalBasePath = cfg.Local.BasePath
-	}
-
-	// Initialize AWS S3 if configuration is provided and enabled
-	if cfg.AWS != nil && cfg.AWS.Enabled {
-		s3Client, err := configureS3(cfg.AWS)
+	// Initialize AWS S3 if configuration is provided
+	if service.Config.AWS != nil {
+		s3Client, err := configureS3(service.Config.AWS)
 		if err != nil {
 			return nil, fmt.Errorf("failed to configure S3: %w", err)
 		}
 		service.S3Client = s3Client
 
-		if err := testS3Connection(s3Client, cfg.AWS.Bucket); err != nil {
+		if err := testS3Connection(s3Client, service.Config.AWS.Bucket); err != nil {
 			return nil, fmt.Errorf("S3 connection test failed: %w", err)
 		}
 		log.Println("S3 connection established successfully.")
 	} else {
-		log.Println("AWS S3 integration is disabled or not configured.")
+		log.Println("AWS S3 configuration not provided. S3 uploads are disabled.")
 	}
 
 	// Initialize ClickHouse if configuration is provided and enabled
-	if cfg.ClickHouse != nil && cfg.ClickHouse.Enabled {
-		chClient, err := configureClickHouse(cfg.ClickHouse)
+	if service.Config.ClickHouse != nil && service.Config.ClickHouse.Enabled {
+		chClient, err := configureClickHouse(service.Config.ClickHouse)
 		if err != nil {
 			return nil, fmt.Errorf("failed to configure ClickHouse: %w", err)
 		}
@@ -135,8 +131,8 @@ func NewService(cfg Config) (*Service, error) {
 		log.Println("ClickHouse connection established successfully.")
 
 		// Set ClickHouse table name, defaulting if not provided
-		if cfg.ClickHouse.TableName != "" {
-			service.ClickHouseTableName = cfg.ClickHouse.TableName
+		if service.Config.ClickHouse.TableName != "" {
+			service.ClickHouseTableName = service.Config.ClickHouse.TableName
 		} else {
 			service.ClickHouseTableName = "vehicle_data"
 		}
@@ -150,7 +146,7 @@ func NewService(cfg Config) (*Service, error) {
 	}
 
 	// Initialize Kafka consumer
-	consumer, err := configureKafka(cfg.Kafka)
+	consumer, err := configureKafka(service.Config.Kafka)
 	if err != nil {
 		return nil, fmt.Errorf("failed to configure Kafka consumer: %w", err)
 	}
@@ -193,16 +189,16 @@ func (s *Service) initializePrometheusMetrics() {
 }
 
 // configureS3 sets up the AWS S3 client
-func configureS3(cfg *S3Config) (*s3.S3, error) {
-	if err := validateS3Config(cfg); err != nil {
+func configureS3(s3Config *S3Config) (*s3.S3, error) {
+	if err := validateS3Config(s3Config); err != nil {
 		return nil, err
 	}
 
 	sess, err := session.NewSession(&aws.Config{
 		S3ForcePathStyle: aws.Bool(true),
-		Region:           aws.String(cfg.Region),
-		Credentials:      credentials.NewStaticCredentials(cfg.AccessKey, cfg.SecretKey, ""),
-		Endpoint:         aws.String(cfg.Endpoint),
+		Region:           aws.String(s3Config.Region),
+		Credentials:      credentials.NewStaticCredentials(s3Config.AccessKey, s3Config.SecretKey, ""),
+		Endpoint:         aws.String(s3Config.Endpoint),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("unable to create AWS session: %w", err)
@@ -222,7 +218,7 @@ func validateS3Config(cfg *S3Config) error {
 // testS3Connection verifies the connection to S3 by listing objects in the specified bucket
 func testS3Connection(s3Svc *s3.S3, bucket string) error {
 	_, err := s3Svc.ListObjectsV2(&s3.ListObjectsV2Input{
-		Bucket:  aws.String(bucket),
+		Bucket: aws.String(bucket),
 		MaxKeys: aws.Int64(1),
 	})
 	if err != nil {
@@ -245,6 +241,7 @@ func configureClickHouse(cfg *ClickHouseConfig) (clickhouse.Conn, error) {
 		TLS: &tls.Config{
 			InsecureSkipVerify: !cfg.Secure,
 		},
+		// Additional options as needed
 	})
 	if err != nil {
 		return nil, fmt.Errorf("unable to connect to ClickHouse: %w", err)
@@ -375,6 +372,7 @@ func insertIntoClickHouse(conn clickhouse.Conn, tableName string, data *protos.P
 	ctx := context.Background()
 
 	// Ensure the target table exists. This is optional and can be handled separately.
+	// Uncomment the following lines if you want the application to create the table automatically.
 	createTableQuery := fmt.Sprintf(`
 	CREATE TABLE IF NOT EXISTS %s (
 		vin String,
@@ -416,12 +414,12 @@ func insertIntoClickHouse(conn clickhouse.Conn, tableName string, data *protos.P
 }
 
 // configureKafka sets up the Kafka consumer
-func configureKafka(cfg KafkaConfig) (*kafka.Consumer, error) {
+func configureKafka(kafkaCfg KafkaConfig) (*kafka.Consumer, error) {
 	consumerConfig := &kafka.ConfigMap{
-		"bootstrap.servers":  cfg.BootstrapServers,
-		"group.id":           cfg.GroupID,
-		"auto.offset.reset":  cfg.AutoOffsetReset,
-		"enable.auto.commit": false,
+		"bootstrap.servers":  kafkaCfg.BootstrapServers,
+		"group.id":           kafkaCfg.GroupID,
+		"auto.offset.reset":  kafkaCfg.AutoOffsetReset,
+		"enable.auto.commit": false, // Manual commit for better control
 	}
 
 	consumer, err := kafka.NewConsumer(consumerConfig)
@@ -430,8 +428,8 @@ func configureKafka(cfg KafkaConfig) (*kafka.Consumer, error) {
 	}
 
 	// Subscribe to the specified topic
-	if err := consumer.SubscribeTopics([]string{cfg.Topic}, nil); err != nil {
-		return nil, fmt.Errorf("failed to subscribe to Kafka topic '%s': %w", cfg.Topic, err)
+	if err := consumer.SubscribeTopics([]string{kafkaCfg.Topic}, nil); err != nil {
+		return nil, fmt.Errorf("failed to subscribe to Kafka topic '%s': %w", kafkaCfg.Topic, err)
 	}
 
 	return consumer, nil
@@ -455,7 +453,7 @@ func loadConfig(path string) (Config, error) {
 		return cfg, fmt.Errorf("incomplete Kafka configuration")
 	}
 
-	// Validate ClickHouse configuration if provided and enabled
+	// Optionally, validate ClickHouse configuration if provided and enabled
 	if cfg.ClickHouse != nil && cfg.ClickHouse.Enabled {
 		if cfg.ClickHouse.Host == "" || cfg.ClickHouse.Port == 0 || cfg.ClickHouse.Database == "" ||
 			cfg.ClickHouse.Username == "" || cfg.ClickHouse.Password == "" {
@@ -463,24 +461,17 @@ func loadConfig(path string) (Config, error) {
 		}
 	}
 
-	// Validate AWS configuration if provided and enabled
-	if cfg.AWS != nil && cfg.AWS.Enabled {
+	// Optionally, validate AWS configuration if provided
+	if cfg.AWS != nil {
 		if err := validateS3Config(cfg.AWS); err != nil {
 			return cfg, fmt.Errorf("invalid AWS configuration: %w", err)
-		}
-	}
-
-	// Validate Local backup configuration if provided and enabled
-	if cfg.Local != nil && cfg.Local.Enabled {
-		if cfg.Local.BasePath == "" {
-			return cfg, fmt.Errorf("Local backup is enabled but basePath is not specified")
 		}
 	}
 
 	return cfg, nil
 }
 
-// uploadToS3 uploads Protobuf data as JSON to the specified S3 bucket
+// uploadToS3 uploads Protobuf data as JSON to the specified S3 bucket with a vin/year/month/day key structure
 func uploadToS3(s3Svc *s3.S3, bucket, vin string, data *protos.Payload) error {
 	now := time.Now().UTC()
 	key := fmt.Sprintf("%s/%04d/%02d/%02d/%04d%02d%02dT%02d%02d%02d.%06dZ.json",
@@ -513,7 +504,7 @@ func uploadToS3(s3Svc *s3.S3, bucket, vin string, data *protos.Payload) error {
 	return nil
 }
 
-// backupLocally saves Protobuf data as JSON to the local filesystem
+// backupLocally saves Protobuf data as JSON to the local filesystem with a vin/year/month/day folder structure
 func backupLocally(basePath, vin string, data *protos.Payload) error {
 	now := time.Now().UTC()
 	dirPath := filepath.Join(basePath,
@@ -565,6 +556,7 @@ func processValue(datum *protos.Datum, service *Service, vin string) {
 		numericValue := boolToFloat64(v.BooleanValue)
 		service.PrometheusGauge.WithLabelValues(fieldName, vin).Set(numericValue)
 	case *protos.Value_LocationValue:
+		// Update separate Latitude and Longitude metrics with the field name as a label
 		service.PrometheusLatitude.WithLabelValues(fieldName, vin).Set(v.LocationValue.Latitude)
 		service.PrometheusLongitude.WithLabelValues(fieldName, vin).Set(v.LocationValue.Longitude)
 	case *protos.Value_DoorValue:
@@ -572,28 +564,60 @@ func processValue(datum *protos.Datum, service *Service, vin string) {
 	case *protos.Value_TimeValue:
 		totalSeconds := float64(v.TimeValue.Hour*3600 + v.TimeValue.Minute*60 + v.TimeValue.Second)
 		service.PrometheusGauge.WithLabelValues(fieldName, vin).Set(totalSeconds)
+	// Handle enums by setting their integer values
+	case *protos.Value_ChargingValue:
+		service.PrometheusGauge.WithLabelValues(fieldName, vin).Set(float64(v.ChargingValue))
+	case *protos.Value_ShiftStateValue:
+		service.PrometheusGauge.WithLabelValues(fieldName, vin).Set(float64(v.ShiftStateValue))
+	case *protos.Value_LaneAssistLevelValue:
+		service.PrometheusGauge.WithLabelValues(fieldName, vin).Set(float64(v.LaneAssistLevelValue))
+	case *protos.Value_ScheduledChargingModeValue:
+		service.PrometheusGauge.WithLabelValues(fieldName, vin).Set(float64(v.ScheduledChargingModeValue))
+	case *protos.Value_SentryModeStateValue:
+		service.PrometheusGauge.WithLabelValues(fieldName, vin).Set(float64(v.SentryModeStateValue))
+	case *protos.Value_SpeedAssistLevelValue:
+		service.PrometheusGauge.WithLabelValues(fieldName, vin).Set(float64(v.SpeedAssistLevelValue))
+	case *protos.Value_BmsStateValue:
+		service.PrometheusGauge.WithLabelValues(fieldName, vin).Set(float64(v.BmsStateValue))
+	case *protos.Value_BuckleStatusValue:
+		service.PrometheusGauge.WithLabelValues(fieldName, vin).Set(float64(v.BuckleStatusValue))
+	case *protos.Value_CarTypeValue:
+		service.PrometheusGauge.WithLabelValues(fieldName, vin).Set(float64(v.CarTypeValue))
+	case *protos.Value_ChargePortValue:
+		service.PrometheusGauge.WithLabelValues(fieldName, vin).Set(float64(v.ChargePortValue))
+	case *protos.Value_ChargePortLatchValue:
+		service.PrometheusGauge.WithLabelValues(fieldName, vin).Set(float64(v.ChargePortLatchValue))
+	case *protos.Value_CruiseStateValue:
+		service.PrometheusGauge.WithLabelValues(fieldName, vin).Set(float64(v.CruiseStateValue))
+	case *protos.Value_DriveInverterStateValue:
+		service.PrometheusGauge.WithLabelValues(fieldName, vin).Set(float64(v.DriveInverterStateValue))
+	case *protos.Value_HvilStatusValue:
+		service.PrometheusGauge.WithLabelValues(fieldName, vin).Set(float64(v.HvilStatusValue))
+	case *protos.Value_WindowStateValue:
+		service.PrometheusGauge.WithLabelValues(fieldName, vin).Set(float64(v.WindowStateValue))
+	case *protos.Value_SeatFoldPositionValue:
+		service.PrometheusGauge.WithLabelValues(fieldName, vin).Set(float64(v.SeatFoldPositionValue))
+	case *protos.Value_TractorAirStatusValue:
+		service.PrometheusGauge.WithLabelValues(fieldName, vin).Set(float64(v.TractorAirStatusValue))
+	case *protos.Value_FollowDistanceValue:
+		service.PrometheusGauge.WithLabelValues(fieldName, vin).Set(float64(v.FollowDistanceValue))
+	case *protos.Value_ForwardCollisionSensitivityValue:
+		service.PrometheusGauge.WithLabelValues(fieldName, vin).Set(float64(v.ForwardCollisionSensitivityValue))
+	case *protos.Value_GuestModeMobileAccessValue:
+		service.PrometheusGauge.WithLabelValues(fieldName, vin).Set(float64(v.GuestModeMobileAccessValue))
+	case *protos.Value_TrailerAirStatusValue:
+		service.PrometheusGauge.WithLabelValues(fieldName, vin).Set(float64(v.TrailerAirStatusValue))
+	case *protos.Value_DetailedChargeStateValue:
+		service.PrometheusGauge.WithLabelValues(fieldName, vin).Set(float64(v.DetailedChargeStateValue))
 	case *protos.Value_Invalid:
 		log.Printf("Invalid value received for field '%s', setting as NaN", fieldName)
 		service.PrometheusGauge.WithLabelValues(fieldName, vin).Set(math.NaN())
 	default:
-		handleEnumValues(v, fieldName, service, vin)
+		log.Printf("Unhandled value type for field '%s': %v", fieldName, v)
 	}
 }
 
-// handleEnumValues processes enum values
-func handleEnumValues(value interface{}, fieldName string, service *Service, vin string) {
-	val := reflect.ValueOf(value)
-	if val.Kind() == reflect.Ptr {
-		val = val.Elem()
-	}
-	if val.Kind() != reflect.Int32 && val.Kind() != reflect.Int64 {
-		log.Printf("Unhandled value type for field '%s': %v", fieldName, value)
-		return
-	}
-	service.PrometheusGauge.WithLabelValues(fieldName, vin).Set(float64(val.Int()))
-}
-
-// boolToFloat64 converts a boolean to float64
+// boolToFloat64 converts a boolean to float64 (1.0 for true, 0.0 for false)
 func boolToFloat64(value bool) float64 {
 	if value {
 		return 1.0
@@ -601,7 +625,7 @@ func boolToFloat64(value bool) float64 {
 	return 0.0
 }
 
-// handleStringValue processes string values
+// handleStringValue processes string values, attempting to parse them as floats
 func handleStringValue(stringValue, fieldName string, service *Service, vin string) {
 	if stringValue == "<invalid>" || stringValue == "\u003cinvalid\u003e" {
 		log.Printf("Invalid string value received for field '%s', setting as NaN", fieldName)
@@ -618,7 +642,7 @@ func handleStringValue(stringValue, fieldName string, service *Service, vin stri
 	}
 }
 
-// handleDoorValues processes door states from Protobuf
+// handleDoorValues processes door states from Protobuf and updates Prometheus metrics
 func handleDoorValues(doors *protos.Doors, gauge *prometheus.GaugeVec, vin string) {
 	doorFields := map[string]bool{
 		"DriverFront":    doors.DriverFront,
@@ -681,27 +705,36 @@ func startConsumerLoop(service *Service, ctx context.Context, wg *sync.WaitGroup
 		default:
 			msg, err := service.KafkaConsumer.ReadMessage(-1)
 			if err != nil {
+				// Handle Kafka consumer errors
 				if kafkaError, ok := err.(kafka.Error); ok && kafkaError.Code() == kafka.ErrAllBrokersDown {
 					log.Printf("Kafka broker is down: %v", err)
-					time.Sleep(5 * time.Second)
+					time.Sleep(5 * time.Second) // Wait before retrying
 					continue
 				}
 				log.Printf("Error while consuming message: %v", err)
 				continue
 			}
 
+			// Deserialize the Protobuf message
 			vehicleData := &protos.Payload{}
 			if err := proto.Unmarshal(msg.Value, vehicleData); err != nil {
 				log.Printf("Failed to unmarshal Protobuf message: %v", err)
 				continue
 			}
 
-			log.Printf("Received Vehicle Data for VIN %s", vehicleData.Vin)
+			log.Printf("Received Vehicle Data for VIN %s: %v", vehicleData.Vin, vehicleData)
 
 			// Process each Datum in the Payload
 			for _, datum := range vehicleData.Data {
 				processValue(datum, service, vehicleData.Vin)
 			}
+
+			// // Serialize data as JSON for storage
+			// jsonData, err := protojson.Marshal(vehicleData)
+			// if err != nil {
+			// 	log.Printf("Failed to marshal vehicleData to JSON: %v", err)
+			// 	continue
+			// }
 
 			// Upload to S3 if enabled
 			if service.S3Client != nil {
