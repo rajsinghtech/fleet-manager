@@ -8,7 +8,40 @@ on:
       - "v*.*.*"  # Triggers on tag push for versioned tags (e.g., v1.0.0)
 
 jobs:
-  build-and-push:
+  build-and-push-frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Log in to Quay.io (only if pushing)
+        if: startsWith(github.ref, 'refs/tags/')
+        run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login quay.io -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+
+      - name: Get tag or commit SHA
+        id: vars
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "image_tag=${{ github.ref_name }}" >> $GITHUB_ENV
+          else
+            echo "image_tag=${{ github.sha }}" >> $GITHUB_ENV
+          fi
+
+      - name: Build Docker Image
+        run: docker build frontend -t fleet-manager:${{ env.image_tag }}  
+
+      - name: Tag Docker Image (only if pushing)
+        if: startsWith(github.ref, 'refs/tags/')
+        run: docker tag fleet-manager:${{ env.image_tag }} quay.io/rajsinghcpre/fleet-manager:${{ env.image_tag }}
+
+      - name: Push Docker Image (only if pushing)
+        if: startsWith(github.ref, 'refs/tags/')
+        run: docker push quay.io/rajsinghcpre/fleet-manager:${{ env.image_tag }}
+
+  build-and-push-backend:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code

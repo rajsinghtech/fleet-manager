@@ -1,2 +1,2 @@
-kubectl port-forward -n rook-ceph svc/rook-ceph-rgw-my-store 9000:80
-kubectl port-forward -n kafka svc/tesla-kafka-brokers 9091:9091
+go mod tidy
+go run main.go -config examples/config.yaml
