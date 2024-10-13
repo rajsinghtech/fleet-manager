@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: frontend
-          image: quay.io/rajsinghcpre/fleet-manager:v0.0.2
+          image: quay.io/rajsinghcpre/fleet-manager:v0.0.3
           # command: ["/fleet-manager", "-config", "/etc/fleet-manager/config.yaml"]
           volumeMounts:
             - name: config-volume
@@ -27,7 +27,7 @@ spec:
               name: http
 
         - name: backend
-          image: quay.io/rajsinghcpre/fleet-manager-backend:v0.0.1
+          image: quay.io/rajsinghcpre/fleet-manager-backend:v0.0.3
           command: ["/fleet-manager", "-config", "/etc/fleet-manager/config.yaml"]
           volumeMounts:
             - name: config-volume
