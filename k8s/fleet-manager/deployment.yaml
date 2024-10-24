@@ -15,14 +15,14 @@ spec:
     spec:
       containers:
         - name: frontend
-          image: quay.io/rajsinghcpre/fleet-manager:v0.0.5
+          image: quay.io/rajsinghcpre/fleet-manager:v0.0.6
           volumeMounts:
             - name: data
               mountPath: /data
           ports:
             - containerPort: 8501
         - name: backend
-          image: quay.io/rajsinghcpre/fleet-manager-backend:v0.0.5
+          image: quay.io/rajsinghcpre/fleet-manager-backend:v0.0.6
           # Removed the command that uses the config file
           volumeMounts:
             - name: data
