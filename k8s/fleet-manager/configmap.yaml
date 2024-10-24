@@ -10,11 +10,11 @@ data:
       auto.offset.reset: "latest"
       topic: "tesla_V"
     aws:
-      bucket: "ceph-bkt-tesla"
-      endpoint: "http://rook-ceph-rgw-my-store.rook-ceph:80"
-      accessKey: "9SVU0V9W84O4I80U0RR6"
-      secretKey: "31zQ864x0rvWHwyWlTcYhUXJjo7nEJ4uwUCarOB8"
-      region: "us-west-1"
+      bucket: "${BUCKET_NAME}"
+      endpoint: "http://${BUCKET_HOST}:${BUCKET_PORT}"
+      accessKey: "${AWS_ACCESS_KEY_ID}"
+      secretKey: "${AWS_SECRET_ACCESS_KEY}"
+      region: "${BUCKET_REGION}"
     local:
       enabled: true
       basePath: "./data"

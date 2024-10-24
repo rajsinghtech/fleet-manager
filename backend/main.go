@@ -216,6 +216,26 @@ func loadConfig(path string) (Config, error) {
 		return cfg, fmt.Errorf("error unmarshalling config file: %w", err)
 	}
 
+	// Override AWS configuration with environment variables if set
+	if cfg.AWS != nil {
+		if bucketName := os.Getenv("BUCKET_NAME"); bucketName != "" {
+			cfg.AWS.Bucket = bucketName
+		}
+		if endpoint := os.Getenv("BUCKET_HOST"); endpoint != "" {
+			port := os.Getenv("BUCKET_PORT")
+			cfg.AWS.Endpoint = fmt.Sprintf("http://%s:%s", endpoint, port)
+		}
+		if accessKey := os.Getenv("AWS_ACCESS_KEY_ID"); accessKey != "" {
+			cfg.AWS.AccessKey = accessKey
+		}
+		if secretKey := os.Getenv("AWS_SECRET_ACCESS_KEY"); secretKey != "" {
+			cfg.AWS.SecretKey = secretKey
+		}
+		if region := os.Getenv("BUCKET_REGION"); region != "" {
+			cfg.AWS.Region = region
+		}
+	}
+
 	// Validate Kafka configuration
 	if cfg.Kafka.BootstrapServers == "" || cfg.Kafka.GroupID == "" || cfg.Kafka.AutoOffsetReset == "" || cfg.Kafka.Topic == "" {
 		return cfg, fmt.Errorf("incomplete Kafka configuration")

@@ -25,6 +25,37 @@ spec:
           ports:
             - containerPort: 8501
               name: http
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: ceph-tesla
+                  key: AWS_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ceph-tesla
+                  key: AWS_SECRET_ACCESS_KEY
+            - name: BUCKET_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: ceph-tesla
+                  key: host
+            - name: BUCKET_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: ceph-tesla
+                  key: name
+            - name: BUCKET_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: ceph-tesla
+                  key: port
+            - name: BUCKET_REGION
+              valueFrom:
+                configMapKeyRef:
+                  name: ceph-tesla
+                  key: region
 
         - name: backend
           image: quay.io/rajsinghcpre/fleet-manager-backend:v0.0.3
