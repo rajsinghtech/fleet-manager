@@ -71,10 +71,11 @@ spec:
                   name: ceph-tesla
                   key: AWS_SECRET_ACCESS_KEY
             - name: AWS_BUCKET_REGION
-              valueFrom:
-                configMapKeyRef:
-                  name: ceph-tesla
-                  key: BUCKET_REGION
+              value: us-east-1
+              # valueFrom:
+              #   configMapKeyRef:
+              #     name: ceph-tesla
+              #     key: BUCKET_REGION
             # Local Backup Configuration
             - name: LOCAL_ENABLED
               value: "true"
