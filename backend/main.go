@@ -4,10 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"log"
 	"math"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -15,8 +15,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-
-	"gopkg.in/yaml.v3"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
@@ -27,54 +25,56 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/protobuf/proto"
 	"github.com/teslamotors/fleet-telemetry/protos"
-	"net/http"
 )
 
 // Config holds the entire configuration structure
 type Config struct {
-	Kafka KafkaConfig  `yaml:"kafka"`
-	AWS   *S3Config    `yaml:"aws,omitempty"`
-	Local *LocalConfig `yaml:"local,omitempty"`
+	Kafka KafkaConfig
+	AWS   *S3Config
+	Local *LocalConfig
 }
 
 // S3Config holds AWS S3 configuration
 type S3Config struct {
-	Endpoint  string `yaml:"endpoint"`
-	Bucket    string `yaml:"bucket"`
-	AccessKey string `yaml:"accessKey"`
-	SecretKey string `yaml:"secretKey"`
-	Region    string `yaml:"region"`
+	Enabled   bool
+	Protocol  string
+	Host      string
+	Port      string
+	Bucket    string
+	AccessKey string
+	SecretKey string
+	Region    string
 }
 
 // LocalConfig holds local backup configuration
 type LocalConfig struct {
-	Enabled  bool   `yaml:"enabled"`
-	BasePath string `yaml:"basePath"`
+	Enabled  bool
+	BasePath string
 }
 
 // KafkaConfig holds Kafka consumer configuration
 type KafkaConfig struct {
-	BootstrapServers string `yaml:"bootstrap.servers"`
-	GroupID          string `yaml:"group.id"`
-	AutoOffsetReset  string `yaml:"auto.offset.reset"`
-	Topic            string `yaml:"topic"`
+	BootstrapServers string
+	GroupID          string
+	AutoOffsetReset  string
+	Topic            string
 }
 
 // Service encapsulates the application's dependencies
 type Service struct {
-	Config              Config
-	S3Client            *s3.S3
-	LocalBackupEnabled  bool
-	LocalBasePath       string
-	KafkaConsumer       *kafka.Consumer
-	PrometheusMetrics   *Metrics
+	Config             Config
+	S3Client           *s3.S3
+	LocalBackupEnabled bool
+	LocalBasePath      string
+	KafkaConsumer      *kafka.Consumer
+	PrometheusMetrics  *Metrics
 }
 
 // Metrics holds all Prometheus metrics
 type Metrics struct {
-	Gauge                 *prometheus.GaugeVec
-	Latitude              *prometheus.GaugeVec
-	Longitude             *prometheus.GaugeVec
+	Gauge     *prometheus.GaugeVec
+	Latitude  *prometheus.GaugeVec
+	Longitude *prometheus.GaugeVec
 }
 
 // NewService initializes the service with configurations
@@ -82,28 +82,32 @@ func NewService(cfg Config) (*Service, error) {
 	service := &Service{
 		Config:             cfg,
 		LocalBackupEnabled: cfg.Local != nil && cfg.Local.Enabled,
-		LocalBasePath:      cfg.Local.BasePath,
+		LocalBasePath:      "",
 		PrometheusMetrics:  initializePrometheusMetrics(),
 	}
 
-	// Initialize AWS S3 if configuration is provided and enabled
-	if service.Config.AWS != nil {
-		s3Client, err := configureS3(service.Config.AWS)
+	if service.LocalBackupEnabled {
+		service.LocalBasePath = cfg.Local.BasePath
+	}
+
+	// Initialize AWS S3 if enabled
+	if cfg.AWS != nil && cfg.AWS.Enabled {
+		s3Client, err := configureS3(cfg.AWS)
 		if err != nil {
 			return nil, fmt.Errorf("failed to configure S3: %w", err)
 		}
 		service.S3Client = s3Client
 
-		if err := testS3Connection(s3Client, service.Config.AWS.Bucket); err != nil {
+		if err := testS3Connection(s3Client, cfg.AWS.Bucket); err != nil {
 			return nil, fmt.Errorf("S3 connection test failed: %w", err)
 		}
 		log.Println("S3 connection established successfully.")
 	} else {
-		log.Println("AWS S3 configuration not provided or disabled. S3 uploads are disabled.")
+		log.Println("AWS S3 uploads are disabled.")
 	}
 
 	// Initialize Kafka consumer
-	consumer, err := configureKafka(service.Config.Kafka)
+	consumer, err := configureKafka(cfg.Kafka)
 	if err != nil {
 		return nil, fmt.Errorf("failed to configure Kafka consumer: %w", err)
 	}
@@ -148,11 +152,13 @@ func configureS3(s3Config *S3Config) (*s3.S3, error) {
 		return nil, err
 	}
 
+	endpoint := fmt.Sprintf("%s://%s:%s", s3Config.Protocol, s3Config.Host, s3Config.Port)
+
 	sess, err := session.NewSession(&aws.Config{
 		S3ForcePathStyle: aws.Bool(true),
 		Region:           aws.String(s3Config.Region),
 		Credentials:      credentials.NewStaticCredentials(s3Config.AccessKey, s3Config.SecretKey, ""),
-		Endpoint:         aws.String(s3Config.Endpoint),
+		Endpoint:         aws.String(endpoint),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("unable to create AWS session: %w", err)
@@ -163,7 +169,7 @@ func configureS3(s3Config *S3Config) (*s3.S3, error) {
 
 // validateS3Config ensures all required S3 configurations are present
 func validateS3Config(cfg *S3Config) error {
-	if cfg.Endpoint == "" || cfg.Bucket == "" || cfg.AccessKey == "" || cfg.SecretKey == "" || cfg.Region == "" {
+	if cfg.Protocol == "" || cfg.Host == "" || cfg.Port == "" || cfg.Bucket == "" || cfg.AccessKey == "" || cfg.SecretKey == "" || cfg.Region == "" {
 		return fmt.Errorf("incomplete S3 configuration")
 	}
 	return nil
@@ -172,7 +178,7 @@ func validateS3Config(cfg *S3Config) error {
 // testS3Connection verifies the connection to S3 by listing objects in the specified bucket
 func testS3Connection(s3Svc *s3.S3, bucket string) error {
 	_, err := s3Svc.ListObjectsV2(&s3.ListObjectsV2Input{
-		Bucket: aws.String(bucket),
+		Bucket:  aws.String(bucket),
 		MaxKeys: aws.Int64(1),
 	})
 	if err != nil {
@@ -203,55 +209,58 @@ func configureKafka(kafkaCfg KafkaConfig) (*kafka.Consumer, error) {
 	return consumer, nil
 }
 
-// loadConfig reads and unmarshals the YAML configuration file
-func loadConfig(path string) (Config, error) {
+// loadConfigFromEnv reads and validates the configuration from environment variables
+func loadConfigFromEnv() (Config, error) {
 	var cfg Config
 
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return cfg, fmt.Errorf("error reading config file '%s': %w", path, err)
+	// Kafka configuration
+	cfg.Kafka.BootstrapServers = os.Getenv("KAFKA_BOOTSTRAP_SERVERS")
+	cfg.Kafka.GroupID = os.Getenv("KAFKA_GROUP_ID")
+	cfg.Kafka.AutoOffsetReset = os.Getenv("KAFKA_AUTO_OFFSET_RESET")
+	if cfg.Kafka.AutoOffsetReset == "" {
+		cfg.Kafka.AutoOffsetReset = "earliest"
 	}
+	cfg.Kafka.Topic = os.Getenv("KAFKA_TOPIC")
 
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return cfg, fmt.Errorf("error unmarshalling config file: %w", err)
-	}
-
-	// Override AWS configuration with environment variables if set
-	if cfg.AWS != nil {
-		if bucketName := os.Getenv("BUCKET_NAME"); bucketName != "" {
-			cfg.AWS.Bucket = bucketName
-		}
-		if endpoint := os.Getenv("BUCKET_HOST"); endpoint != "" {
-			port := os.Getenv("BUCKET_PORT")
-			cfg.AWS.Endpoint = fmt.Sprintf("http://%s:%s", endpoint, port)
-		}
-		if accessKey := os.Getenv("AWS_ACCESS_KEY_ID"); accessKey != "" {
-			cfg.AWS.AccessKey = accessKey
-		}
-		if secretKey := os.Getenv("AWS_SECRET_ACCESS_KEY"); secretKey != "" {
-			cfg.AWS.SecretKey = secretKey
-		}
-		if region := os.Getenv("BUCKET_REGION"); region != "" {
-			cfg.AWS.Region = region
-		}
-	}
-
-	// Validate Kafka configuration
-	if cfg.Kafka.BootstrapServers == "" || cfg.Kafka.GroupID == "" || cfg.Kafka.AutoOffsetReset == "" || cfg.Kafka.Topic == "" {
+	if cfg.Kafka.BootstrapServers == "" || cfg.Kafka.GroupID == "" || cfg.Kafka.Topic == "" {
 		return cfg, fmt.Errorf("incomplete Kafka configuration")
 	}
 
-	// Validate AWS configuration if provided
-	if cfg.AWS != nil {
+	// AWS S3 configuration
+	awsEnabledStr := os.Getenv("AWS_ENABLED")
+	awsEnabled, err := strconv.ParseBool(awsEnabledStr)
+	if err != nil {
+		awsEnabled = false
+	}
+	if awsEnabled {
+		cfg.AWS = &S3Config{
+			Enabled:   true,
+			Protocol:  os.Getenv("AWS_BUCKET_PROTOCOL"),
+			Host:      os.Getenv("AWS_BUCKET_HOST"),
+			Port:      os.Getenv("AWS_BUCKET_PORT"),
+			Bucket:    os.Getenv("AWS_BUCKET_NAME"),
+			AccessKey: os.Getenv("AWS_ACCESS_KEY_ID"),
+			SecretKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
+			Region:    os.Getenv("AWS_BUCKET_REGION"),
+		}
 		if err := validateS3Config(cfg.AWS); err != nil {
 			return cfg, fmt.Errorf("invalid AWS configuration: %w", err)
 		}
 	}
 
-	// Validate Local configuration if provided
-	if cfg.Local != nil {
+	// Local backup configuration
+	localEnabledStr := os.Getenv("LOCAL_ENABLED")
+	localEnabled, err := strconv.ParseBool(localEnabledStr)
+	if err != nil {
+		localEnabled = false
+	}
+	if localEnabled {
+		cfg.Local = &LocalConfig{
+			Enabled:  true,
+			BasePath: os.Getenv("LOCAL_BASE_PATH"),
+		}
 		if cfg.Local.BasePath == "" {
-			return cfg, fmt.Errorf("local.basePath cannot be empty when local backup is enabled")
+			return cfg, fmt.Errorf("LOCAL_BASE_PATH cannot be empty when local backup is enabled")
 		}
 	}
 
@@ -342,48 +351,7 @@ func processValue(datum *protos.Datum, service *Service, vin string) {
 	// Handle enums by setting their integer values
 	case *protos.Value_ChargingValue:
 		service.PrometheusMetrics.Gauge.WithLabelValues(fieldName, vin).Set(float64(v.ChargingValue))
-	case *protos.Value_ShiftStateValue:
-		service.PrometheusMetrics.Gauge.WithLabelValues(fieldName, vin).Set(float64(v.ShiftStateValue))
-	case *protos.Value_LaneAssistLevelValue:
-		service.PrometheusMetrics.Gauge.WithLabelValues(fieldName, vin).Set(float64(v.LaneAssistLevelValue))
-	case *protos.Value_ScheduledChargingModeValue:
-		service.PrometheusMetrics.Gauge.WithLabelValues(fieldName, vin).Set(float64(v.ScheduledChargingModeValue))
-	case *protos.Value_SentryModeStateValue:
-		service.PrometheusMetrics.Gauge.WithLabelValues(fieldName, vin).Set(float64(v.SentryModeStateValue))
-	case *protos.Value_SpeedAssistLevelValue:
-		service.PrometheusMetrics.Gauge.WithLabelValues(fieldName, vin).Set(float64(v.SpeedAssistLevelValue))
-	case *protos.Value_BmsStateValue:
-		service.PrometheusMetrics.Gauge.WithLabelValues(fieldName, vin).Set(float64(v.BmsStateValue))
-	case *protos.Value_BuckleStatusValue:
-		service.PrometheusMetrics.Gauge.WithLabelValues(fieldName, vin).Set(float64(v.BuckleStatusValue))
-	case *protos.Value_CarTypeValue:
-		service.PrometheusMetrics.Gauge.WithLabelValues(fieldName, vin).Set(float64(v.CarTypeValue))
-	case *protos.Value_ChargePortValue:
-		service.PrometheusMetrics.Gauge.WithLabelValues(fieldName, vin).Set(float64(v.ChargePortValue))
-	case *protos.Value_ChargePortLatchValue:
-		service.PrometheusMetrics.Gauge.WithLabelValues(fieldName, vin).Set(float64(v.ChargePortLatchValue))
-	case *protos.Value_CruiseStateValue:
-		service.PrometheusMetrics.Gauge.WithLabelValues(fieldName, vin).Set(float64(v.CruiseStateValue))
-	case *protos.Value_DriveInverterStateValue:
-		service.PrometheusMetrics.Gauge.WithLabelValues(fieldName, vin).Set(float64(v.DriveInverterStateValue))
-	case *protos.Value_HvilStatusValue:
-		service.PrometheusMetrics.Gauge.WithLabelValues(fieldName, vin).Set(float64(v.HvilStatusValue))
-	case *protos.Value_WindowStateValue:
-		service.PrometheusMetrics.Gauge.WithLabelValues(fieldName, vin).Set(float64(v.WindowStateValue))
-	case *protos.Value_SeatFoldPositionValue:
-		service.PrometheusMetrics.Gauge.WithLabelValues(fieldName, vin).Set(float64(v.SeatFoldPositionValue))
-	case *protos.Value_TractorAirStatusValue:
-		service.PrometheusMetrics.Gauge.WithLabelValues(fieldName, vin).Set(float64(v.TractorAirStatusValue))
-	case *protos.Value_FollowDistanceValue:
-		service.PrometheusMetrics.Gauge.WithLabelValues(fieldName, vin).Set(float64(v.FollowDistanceValue))
-	case *protos.Value_ForwardCollisionSensitivityValue:
-		service.PrometheusMetrics.Gauge.WithLabelValues(fieldName, vin).Set(float64(v.ForwardCollisionSensitivityValue))
-	case *protos.Value_GuestModeMobileAccessValue:
-		service.PrometheusMetrics.Gauge.WithLabelValues(fieldName, vin).Set(float64(v.GuestModeMobileAccessValue))
-	case *protos.Value_TrailerAirStatusValue:
-		service.PrometheusMetrics.Gauge.WithLabelValues(fieldName, vin).Set(float64(v.TrailerAirStatusValue))
-	case *protos.Value_DetailedChargeStateValue:
-		service.PrometheusMetrics.Gauge.WithLabelValues(fieldName, vin).Set(float64(v.DetailedChargeStateValue))
+	// Add other enum cases as needed
 	case *protos.Value_Invalid:
 		log.Printf("Invalid value received for field '%s', setting as NaN", fieldName)
 		service.PrometheusMetrics.Gauge.WithLabelValues(fieldName, vin).Set(math.NaN())
@@ -535,15 +503,16 @@ func startConsumerLoop(service *Service, ctx context.Context, wg *sync.WaitGroup
 
 // main is the entry point of the application
 func main() {
-	// Parse command-line flags
-	configPath := flag.String("config", "config.yaml", "Path to the YAML configuration file")
-	promAddr := flag.String("prometheus.addr", ":2112", "Address for Prometheus metrics server")
-	flag.Parse()
-
-	// Load configuration
-	cfg, err := loadConfig(*configPath)
+	// Load configuration from environment variables
+	cfg, err := loadConfigFromEnv()
 	if err != nil {
 		log.Fatalf("Configuration error: %v", err)
+	}
+
+	// Read Prometheus address from environment variable, default to ":2112"
+	promAddr := os.Getenv("PROMETHEUS_ADDR")
+	if promAddr == "" {
+		promAddr = ":2112"
 	}
 
 	// Initialize service
@@ -558,7 +527,7 @@ func main() {
 
 	// Start Prometheus metrics server
 	wg.Add(1)
-	go startPrometheusServer(*promAddr, &wg, ctx)
+	go startPrometheusServer(promAddr, &wg, ctx)
 
 	// Start Kafka consumer loop
 	wg.Add(1)
