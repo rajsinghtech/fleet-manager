@@ -8,7 +8,6 @@ require (
 	github.com/prometheus/client_golang v1.15.0
 	github.com/teslamotors/fleet-telemetry v0.3.2
 	google.golang.org/protobuf v1.33.0
-	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
