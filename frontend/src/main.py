@@ -3,13 +3,31 @@ import boto3
 from botocore.client import Config
 import json
 import pandas as pd
-import matplotlib.pyplot as plt
+import plotly.express as px
 from datetime import datetime, timezone
 import os  # Import os to access environment variables
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Configure Streamlit page
-st.set_page_config(page_title="S3 JSON Data Visualization", layout="wide")
+st.set_page_config(
+    page_title="Fleet Manager",
+    page_icon="🚗",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# Add a logo and title
+def add_header():
+    col1, col2 = st.columns([1, 3])
+    with col1:
+        # Replace 'logo.png' with the path to your logo image
+        if os.path.exists("frontend/src/logo.png"):
+            st.image("frontend/src/logo.png", width=100)
+    with col2:
+        st.title("Fleet Manager 🚗")
+        st.markdown("### Monitor and Analyze Your Tesla Fleet Telemetry")
+
+add_header()
 
 # Load AWS credentials and configuration from environment variables
 AWS_ACCESS_KEY_ID = os.environ.get('AWS_ACCESS_KEY_ID')
@@ -134,115 +152,123 @@ def process_json_data(json_objects):
 def main():
     bucket_name = AWS_BUCKET_NAME
 
-    st.title('S3 JSON Data Visualization')
-
-    # Get the list of VINs
-    prefixes = list_prefixes(s3_client, bucket_name, prefix='', delimiter='/')
-    vins = [vin.split('/')[0] for vin in prefixes]  # Extract VINs
-    vins = list(sorted(set(vins)))  # Ensure unique and sorted
-    if not vins:
-        st.error("No VINs found in the bucket. Please check your S3 connection and bucket contents.")
-        st.stop()
-
-    selected_vin = st.selectbox('Select VIN', vins)
-
-    if selected_vin:
-        # List available years for the selected VIN
-        vin_prefix = f"{selected_vin}/"
-        years_prefixes = list_prefixes(s3_client, bucket_name, prefix=vin_prefix, delimiter='/')
-        years = [year.split('/')[-1] for year in years_prefixes]  # Extract years
-        years = list(sorted(set(years)))
-        if not years:
-            st.warning("No years found for the selected VIN.")
+    # Sidebar for selections
+    with st.sidebar:
+        st.header("🔍 Filter Options")
+        
+        # Get the list of VINs
+        prefixes = list_prefixes(s3_client, bucket_name, prefix='', delimiter='/')
+        vins = [vin.split('/')[0] for vin in prefixes]  # Extract VINs
+        vins = list(sorted(set(vins)))  # Ensure unique and sorted
+        if not vins:
+            st.error("No VINs found in the bucket. Please check your S3 connection and bucket contents.")
             st.stop()
 
-        selected_year = st.selectbox('Select Year', years)
+        selected_vin = st.selectbox('Select VIN', vins)
 
-        if selected_year:
-            year_prefix = f"{vin_prefix}{selected_year}/"
-            months_prefixes = list_prefixes(s3_client, bucket_name, prefix=year_prefix, delimiter='/')
-            months = [month.split('/')[-1] for month in months_prefixes]  # Extract months
-            months = list(sorted(set(months)))
-            if not months:
-                st.warning("No months found for the selected VIN and year.")
+        if selected_vin:
+            # List available years for the selected VIN
+            vin_prefix = f"{selected_vin}/"
+            years_prefixes = list_prefixes(s3_client, bucket_name, prefix=vin_prefix, delimiter='/')
+            years = [year.split('/')[-1] for year in years_prefixes]  # Extract years
+            years = list(sorted(set(years)))
+            if not years:
+                st.warning("No years found for the selected VIN.")
                 st.stop()
 
-            selected_month = st.selectbox('Select Month', months)
+            selected_year = st.selectbox('Select Year', years)
 
-            if selected_month:
-                month_prefix = f"{year_prefix}{selected_month}/"
-                days_prefixes = list_prefixes(s3_client, bucket_name, prefix=month_prefix, delimiter='/')
-                days = [day.split('/')[-1] for day in days_prefixes]  # Extract days
-                days = list(sorted(set(days)))
-                if not days:
-                    st.warning("No days found for the selected VIN, year, and month.")
+            if selected_year:
+                year_prefix = f"{vin_prefix}{selected_year}/"
+                months_prefixes = list_prefixes(s3_client, bucket_name, prefix=year_prefix, delimiter='/')
+                months = [month.split('/')[-1] for month in months_prefixes]  # Extract months
+                months = list(sorted(set(months)))
+                if not months:
+                    st.warning("No months found for the selected VIN and year.")
                     st.stop()
 
-                selected_day = st.selectbox('Select Day', days)
+                selected_month = st.selectbox('Select Month', months)
 
-                if selected_day:
-                    # List all JSON files under the selected day
-                    day_prefix = f"{month_prefix}{selected_day}/"
-                    paginator = s3_client.get_paginator('list_objects_v2')
-                    json_files = []
-                    try:
-                        for result in paginator.paginate(Bucket=bucket_name, Prefix=day_prefix):
-                            for obj in result.get('Contents', []):
-                                key = obj['Key']
-                                if key.endswith('.json'):
-                                    json_files.append(key)
-                    except Exception as e:
-                        st.error(f"Error listing JSON files: {e}")
+                if selected_month:
+                    month_prefix = f"{year_prefix}{selected_month}/"
+                    days_prefixes = list_prefixes(s3_client, bucket_name, prefix=month_prefix, delimiter='/')
+                    days = [day.split('/')[-1] for day in days_prefixes]  # Extract days
+                    days = list(sorted(set(days)))
+                    if not days:
+                        st.warning("No days found for the selected VIN, year, and month.")
                         st.stop()
 
-                    st.write(f"Found {len(json_files)} JSON files for VIN {selected_vin} on {selected_year}-{selected_month}-{selected_day}")
+                    selected_day = st.selectbox('Select Day', days)
 
-                    if json_files:
-                        with st.spinner('Fetching and processing JSON files...'):
-                            json_objects = fetch_all_json_objects(s3_client, bucket_name, json_files)
-                            df = process_json_data(json_objects)
+                    if selected_day:
+                        # List all JSON files under the selected day
+                        day_prefix = f"{month_prefix}{selected_day}/"
+                        paginator = s3_client.get_paginator('list_objects_v2')
+                        json_files = []
+                        try:
+                            for result in paginator.paginate(Bucket=bucket_name, Prefix=day_prefix):
+                                for obj in result.get('Contents', []):
+                                    key = obj['Key']
+                                    if key.endswith('.json'):
+                                        json_files.append(key)
+                        except Exception as e:
+                            st.error(f"Error listing JSON files: {e}")
+                            st.stop()
 
-                        if not df.empty:
-                            st.write("### Raw Dataframe")
-                            st.dataframe(df)
+                        st.markdown(f"**Found {len(json_files)} JSON files for VIN `{selected_vin}` on {selected_year}-{selected_month}-{selected_day}**")
 
-                            # Convert 'key' to string
-                            df['key'] = df['key'].astype(str)
+    # Main content area
+    st.markdown("---")
+    if 'selected_day' in locals() and selected_day:
+        if json_files:
+            with st.spinner('Fetching and processing JSON files...'):
+                json_objects = fetch_all_json_objects(s3_client, bucket_name, json_files)
+                df = process_json_data(json_objects)
 
-                            # Convert 'value' to numeric if possible
-                            df['value_numeric'] = pd.to_numeric(df['value'], errors='coerce')
+            if not df.empty:
+                # Display raw data
+                st.subheader("📊 Raw Data")
+                st.dataframe(df)
 
-                            unique_keys = df['key'].unique()
-                            selected_keys = st.multiselect('Select keys to plot', unique_keys, key='selected_keys')
+                # Data Processing
+                df['key'] = df['key'].astype(str)
+                df['value_numeric'] = pd.to_numeric(df['value'], errors='coerce')
 
-                            if selected_keys:
-                                for key in selected_keys:
-                                    df_key = df[df['key'] == key].copy()
-                                    df_key.sort_values('datetime', inplace=True)
+                unique_keys = df['key'].unique()
+                selected_keys = st.multiselect('Select Keys to Plot', unique_keys, key='selected_keys')
 
-                                    st.write(f"### Data for key `{key}`")
-                                    st.dataframe(df_key)
+                if selected_keys:
+                    st.subheader("📈 Data Visualizations")
 
-                                    if df_key['value_numeric'].notnull().any():
-                                        df_key.set_index('datetime', inplace=True)
-                                        st.line_chart(df_key['value_numeric'], width=800, height=400)
-                                    else:
-                                        st.write(f"Key `{key}` has non-numeric values or no valid data to plot.")
-                                        st.dataframe(df_key[['datetime', 'value']])
+                    # Organize plots in tabs
+                    tabs = st.tabs(selected_keys)
+
+                    for tab, key in zip(tabs, selected_keys):
+                        with tab:
+                            df_key = df[df['key'] == key].copy()
+                            df_key.sort_values('datetime', inplace=True)
+
+                            st.markdown(f"### `{key}`")
+                            st.dataframe(df_key)
+
+                            if df_key['value_numeric'].notnull().any():
+                                fig = px.line(df_key, x='datetime', y='value_numeric', title=f"{key} Over Time")
+                                st.plotly_chart(fig, use_container_width=True)
                             else:
-                                st.warning("Please select at least one key to plot.")
-                        else:
-                            st.warning("No data available to display.")
-                    else:
-                        st.warning("No JSON files found for the selected day.")
+                                st.warning(f"Key `{key}` has non-numeric values or no valid data to plot.")
+                                st.dataframe(df_key[['datetime', 'value']])
                 else:
-                    st.warning("Please select a day.")
+                    st.warning("🔔 Please select at least one key to plot.")
             else:
-                st.warning("Please select a month.")
+                st.warning("⚠️ No data available to display.")
         else:
-            st.warning("Please select a year.")
+            st.warning("⚠️ No JSON files found for the selected day.")
     else:
-        st.warning("Please select a VIN.")
+        st.info("📝 Please use the sidebar to select VIN, Year, Month, and Day to view telemetry data.")
+
+    # Footer
+    st.markdown("---")
+    st.markdown("© 2024 Fleet Manager. All rights reserved.")
 
 if __name__ == "__main__":
     main()
