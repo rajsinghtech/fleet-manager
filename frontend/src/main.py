@@ -8,6 +8,30 @@ from datetime import datetime, timezone
 import os  # Import os to access environment variables
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+# Add this mapping after your existing imports and before any functions
+KEY_MAPPING = {
+    112: "DestinationLocation",
+    7: "PackCurrent",
+    6: "PackVoltage",
+    5: "Odometer",
+    4: "Invalid",
+    85: "InsideTemp",
+    86: "OutsideTemp",
+    21: "Location",
+    42: "BatteryLevel",
+    40: "EstBatteryRange",
+    # Add all other key mappings as needed
+}
+
+# Define dashboard groupings based on protobuf fields
+DASHBOARD_GROUPS = {
+    "Battery Dashboard": ["PackCurrent", "PackVoltage", "BatteryLevel", "EstBatteryRange"],
+    "Temperature Dashboard": ["InsideTemp", "OutsideTemp"],
+    "Location Dashboard": ["Location", "DestinationLocation"],
+    "Vehicle Info Dashboard": ["Odometer", "Invalid"],
+    # Add more dashboards as needed based on proto fields
+}
+
 # Configure Streamlit page
 st.set_page_config(
     page_title="Fleet Manager",
@@ -118,7 +142,7 @@ def process_json_data(json_objects):
         json_objects (list): List of JSON data.
 
     Returns:
-        pandas.DataFrame: Processed data.
+        pandas.DataFrame: Processed data with string keys.
     """
     data_list = []
     for json_data in json_objects:
@@ -132,21 +156,22 @@ def process_json_data(json_objects):
             continue
         data_entries = json_data.get('data', [])
         for entry in data_entries:
-            key_entry = entry.get('key')
+            numeric_key = entry.get('key')
+            string_key = KEY_MAPPING.get(numeric_key, f"Unknown_{numeric_key}")
             value_dict = entry.get('value', {}).get('Value', {})
             if 'StringValue' in value_dict:
                 val = value_dict['StringValue']
-                data_list.append({'datetime': dt, 'key': key_entry, 'value': val})
+                data_list.append({'datetime': dt, 'key': string_key, 'value': val})
             elif 'LocationValue' in value_dict:
                 location = value_dict['LocationValue']
                 lat = location.get('latitude')
                 lon = location.get('longitude')
-                data_list.append({'datetime': dt, 'key': f"{key_entry}_lat", 'value': lat})
-                data_list.append({'datetime': dt, 'key': f"{key_entry}_lon", 'value': lon})
+                data_list.append({'datetime': dt, 'key': f"{string_key}_lat", 'value': lat})
+                data_list.append({'datetime': dt, 'key': f"{string_key}_lon", 'value': lon})
             elif 'Invalid' in value_dict and value_dict['Invalid']:
-                data_list.append({'datetime': dt, 'key': key_entry, 'value': None})
+                data_list.append({'datetime': dt, 'key': string_key, 'value': None})
             else:
-                data_list.append({'datetime': dt, 'key': key_entry, 'value': None})
+                data_list.append({'datetime': dt, 'key': string_key, 'value': None})
     return pd.DataFrame(data_list)
 
 def main():
@@ -198,28 +223,37 @@ def main():
                         st.warning("No days found for the selected VIN, year, and month.")
                         st.stop()
 
-                    selected_day = st.selectbox('Select Day', days)
+                    # Default to the most recent day
+                    default_day = days[-1] if days else None
+                    selected_days = st.multiselect(
+                        'Select Day(s)',
+                        options=days,
+                        default=[default_day] if default_day else []
+                    )
 
-                    if selected_day:
-                        # List all JSON files under the selected day
-                        day_prefix = f"{month_prefix}{selected_day}/"
-                        paginator = s3_client.get_paginator('list_objects_v2')
+                    if selected_days:
+                        # List all JSON files under the selected days
                         json_files = []
-                        try:
-                            for result in paginator.paginate(Bucket=bucket_name, Prefix=day_prefix):
-                                for obj in result.get('Contents', []):
-                                    key = obj['Key']
-                                    if key.endswith('.json'):
-                                        json_files.append(key)
-                        except Exception as e:
-                            st.error(f"Error listing JSON files: {e}")
-                            st.stop()
+                        for day in selected_days:
+                            day_prefix = f"{month_prefix}{day}/"
+                            paginator = s3_client.get_paginator('list_objects_v2')
+                            try:
+                                for result in paginator.paginate(Bucket=bucket_name, Prefix=day_prefix):
+                                    for obj in result.get('Contents', []):
+                                        key = obj['Key']
+                                        if key.endswith('.json'):
+                                            json_files.append(key)
+                            except Exception as e:
+                                st.error(f"Error listing JSON files for day {day}: {e}")
+                                st.stop()
 
-                        st.markdown(f"**Found {len(json_files)} JSON files for VIN `{selected_vin}` on {selected_year}-{selected_month}-{selected_day}**")
+                        st.markdown(f"**Found {len(json_files)} JSON files for VIN `{selected_vin}` on selected day(s)**")
+                        selected_day_info = ", ".join(selected_days)
+                        st.markdown(f"**Selected Day(s): {selected_day_info}**")
 
     # Main content area
     st.markdown("---")
-    if 'selected_day' in locals() and selected_day:
+    if 'selected_days' in locals() and selected_days:
         if json_files:
             with st.spinner('Fetching and processing JSON files...'):
                 json_objects = fetch_all_json_objects(s3_client, bucket_name, json_files)
@@ -231,40 +265,55 @@ def main():
                 st.dataframe(df)
 
                 # Data Processing
-                df['key'] = df['key'].astype(str)
                 df['value_numeric'] = pd.to_numeric(df['value'], errors='coerce')
 
-                unique_keys = df['key'].unique()
-                selected_keys = st.multiselect('Select Keys to Plot', unique_keys, key='selected_keys')
+                # Organize plots in tabs based on predefined dashboards
+                st.subheader("📈 Data Visualizations")
+                tabs = st.tabs(list(DASHBOARD_GROUPS.keys()))
 
-                if selected_keys:
-                    st.subheader("📈 Data Visualizations")
-
-                    # Organize plots in tabs
-                    tabs = st.tabs(selected_keys)
-
-                    for tab, key in zip(tabs, selected_keys):
-                        with tab:
-                            df_key = df[df['key'] == key].copy()
+                for tab, (dashboard_name, keys) in zip(tabs, DASHBOARD_GROUPS.items()):
+                    with tab:
+                        st.markdown(f"### {dashboard_name}")
+                        for key in keys:
+                            df_key = df[df['key'].isin([key, f"{key}_lat", f"{key}_lon"])].copy()
+                            if df_key.empty:
+                                st.write(f"No data available for `{key}`.")
+                                continue
                             df_key.sort_values('datetime', inplace=True)
-
-                            st.markdown(f"### `{key}`")
+                            st.markdown(f"#### `{key}`")
                             st.dataframe(df_key)
 
-                            if df_key['value_numeric'].notnull().any():
-                                fig = px.line(df_key, x='datetime', y='value_numeric', title=f"{key} Over Time")
-                                st.plotly_chart(fig, use_container_width=True)
+                            if 'lat' in key.lower() or 'lon' in key.lower():
+                                # For location data, plot on a map if latitude and longitude are available
+                                lat_key = f"{key}_lat"
+                                lon_key = f"{key}_lon"
+                                df_lat = df[df['key'] == lat_key].rename(columns={'value': 'latitude'})
+                                df_lon = df[df['key'] == lon_key].rename(columns={'value': 'longitude'})
+                                df_merged = pd.merge(df_lat, df_lon, on='datetime')
+                                if not df_merged.empty:
+                                    fig = px.scatter_mapbox(
+                                        df_merged,
+                                        lat='latitude',
+                                        lon='longitude',
+                                        hover_name='datetime',
+                                        zoom=10,
+                                        height=300,
+                                        mapbox_style="open-street-map"
+                                    )
+                                    st.plotly_chart(fig, use_container_width=True)
+                                else:
+                                    st.warning(f"No valid location data to plot for `{key}`.")
                             else:
-                                st.warning(f"Key `{key}` has non-numeric values or no valid data to plot.")
-                                st.dataframe(df_key[['datetime', 'value']])
-                else:
-                    st.warning("🔔 Please select at least one key to plot.")
-            else:
-                st.warning("⚠️ No data available to display.")
+                                if df_key['value_numeric'].notnull().any():
+                                    fig = px.line(df_key, x='datetime', y='value_numeric', title=f"{key} Over Time")
+                                    st.plotly_chart(fig, use_container_width=True)
+                                else:
+                                    st.warning(f"Key `{key}` has non-numeric values or no valid data to plot.")
+                                    st.dataframe(df_key[['datetime', 'value']])
         else:
-            st.warning("⚠️ No JSON files found for the selected day.")
+            st.warning("⚠️ No JSON files found for the selected day(s).")
     else:
-        st.info("📝 Please use the sidebar to select VIN, Year, Month, and Day to view telemetry data.")
+        st.info("📝 Please use the sidebar to select VIN, Year, Month, and Day(s) to view telemetry data.")
 
     # Footer
     st.markdown("---")
