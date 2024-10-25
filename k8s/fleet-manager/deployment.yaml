@@ -15,14 +15,47 @@ spec:
     spec:
       containers:
         - name: frontend
-          image: quay.io/rajsinghcpre/fleet-manager:v0.0.6
+          image: quay.io/rajsinghcpre/fleet-manager:v0.0.7
           volumeMounts:
             - name: data
               mountPath: /data
           ports:
             - containerPort: 8501
+          env:
+            # AWS S3 Configuration
+            - name: AWS_ENABLED
+              value: "true"
+            - name: AWS_BUCKET_PROTOCOL
+              value: "http"
+            - name: AWS_BUCKET_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: ceph-tesla
+                  key: BUCKET_HOST
+            - name: AWS_BUCKET_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: ceph-tesla
+                  key: BUCKET_PORT
+            - name: AWS_BUCKET_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: ceph-tesla
+                  key: BUCKET_NAME
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: ceph-tesla
+                  key: AWS_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ceph-tesla
+                  key: AWS_SECRET_ACCESS_KEY
+            - name: AWS_BUCKET_REGION
+              value: us-east-1
         - name: backend
-          image: quay.io/rajsinghcpre/fleet-manager-backend:v0.0.6
+          image: quay.io/rajsinghcpre/fleet-manager-backend:v0.0.7
           # Removed the command that uses the config file
           volumeMounts:
             - name: data

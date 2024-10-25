@@ -1,0 +1,95 @@
+{
+    "data": [
+        {
+            "key": 112,
+            "value": {
+                "Value": {
+                    "LocationValue": {
+                        "latitude": 41.88119,
+                        "longitude": -87.641913
+                    }
+                }
+            }
+        },
+        {
+            "key": 7,
+            "value": {
+                "Value": {
+                    "StringValue": "-0.700"
+                }
+            }
+        },
+        {
+            "key": 6,
+            "value": {
+                "Value": {
+                    "StringValue": "368.200"
+                }
+            }
+        },
+        {
+            "key": 5,
+            "value": {
+                "Value": {
+                    "StringValue": "6362.137"
+                }
+            }
+        },
+        {
+            "key": 4,
+            "value": {
+                "Value": {
+                    "Invalid": true
+                }
+            }
+        },
+        {
+            "key": 85,
+            "value": {
+                "Value": {
+                    "StringValue": "22.700"
+                }
+            }
+        },
+        {
+            "key": 86,
+            "value": {
+                "Value": {
+                    "StringValue": "17.500"
+                }
+            }
+        },
+        {
+            "key": 21,
+            "value": {
+                "Value": {
+                    "LocationValue": {
+                        "latitude": 41.881402,
+                        "longitude": -87.643766
+                    }
+                }
+            }
+        },
+        {
+            "key": 42,
+            "value": {
+                "Value": {
+                    "StringValue": "55.368"
+                }
+            }
+        },
+        {
+            "key": 40,
+            "value": {
+                "Value": {
+                    "StringValue": "190.938"
+                }
+            }
+        }
+    ],
+    "created_at": {
+        "seconds": 1729801575,
+        "nanos": 921041899
+    },
+    "vin": "7SAYGDEEXRA288618"
+}
