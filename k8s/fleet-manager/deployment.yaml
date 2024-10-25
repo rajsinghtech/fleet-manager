@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: frontend
-          image: quay.io/rajsinghcpre/fleet-manager:v0.0.7
+          image: quay.io/rajsinghcpre/fleet-manager:v0.0.8
           volumeMounts:
             - name: data
               mountPath: /data
@@ -55,7 +55,7 @@ spec:
             - name: AWS_BUCKET_REGION
               value: us-east-1
         - name: backend
-          image: quay.io/rajsinghcpre/fleet-manager-backend:v0.0.7
+          image: quay.io/rajsinghcpre/fleet-manager-backend:v0.0.8
           # Removed the command that uses the config file
           volumeMounts:
             - name: data
